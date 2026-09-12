@@ -928,5 +928,3 @@
 | tesseract.js 5.1.1, tesseract.js-core 5.1.1 | Apache-2.0 |
 | โมเดล Tesseract `tha`, `eng` (best_int; ตัด word dictionary ของ eng ออกเพื่อลดขนาด) | Apache-2.0 |
 | ฟอนต์ Anuphan, Sarabun (Cadson Demak / Google Fonts, subset) | SIL Open Font License 1.1 |
-
-ถ้าจะเผยแพร่ต่อสาธารณะ ควรแนบข้อความสัญญาอนุญาตของส่วนประกอบข้างต้นไว้ด้วย
