@@ -398,6 +398,8 @@ img.sig{max-height:56px;max-width:190px;display:block}
   #printRoot .doc.landscape{width:297mm;min-height:209mm}
   #printRoot .doc.auto{min-height:0}
   #printRoot .doc:last-child{break-after:auto;page-break-after:auto}
+  #printRoot thead{display:table-header-group}
+  #printRoot tr{break-inside:avoid;page-break-inside:avoid}
 }
 
 </style>
@@ -3917,8 +3919,9 @@ function salesDocHTML(d, o) {
   }
   const pp = (d.type === 'IV' || d.type === 'QT') && d.showQR && s.promptpay ? qrImg(Core.promptPayPayload(s.promptpay, t.net)) : null;
   const correct = d.type === 'CN' ? B(S(d.origValue) - S(t.base)) : B(S(d.origValue) + S(t.base));
+  const pageLabel = `${T.short} เลขที่ ${d.no}${o.copyLabel ? ` (${o.copyLabel})` : ''}`;
   const signs = { QT: ['ผู้อนุมัติสั่งซื้อ', 'ผู้เสนอราคา'], IV: ['ผู้รับวางบิล', 'ผู้วางบิล'], TX: ['ผู้จ่ายเงิน', 'ผู้รับเงิน'], RE: ['ผู้จ่ายเงิน', 'ผู้รับเงิน'], CN: ['ผู้รับเอกสาร', 'ผู้มีอำนาจลงนาม'], DN: ['ผู้รับเอกสาร', 'ผู้มีอำนาจลงนาม'], PO: ['ผู้ขาย (ยืนยันคำสั่งซื้อ)', 'ผู้สั่งซื้อ'] }[d.type];
-  return `<div class="doc">
+  return `<div class="doc" data-page-label="${esc(pageLabel)}">
     <header class="d-head">${orgBlock()}
       <div class="d-title">${o.copyLabel ? `<span class="d-copy">${esc(o.copyLabel)}</span>` : ''}
         <h1>${esc(T.th)}</h1><div class="en">${esc(T.en)}</div>
@@ -3964,7 +3967,7 @@ function wtDocHTML(d, o) {
     return hits.map((h, i) => `<tr><td>${i === 0 ? esc(wr.t) : ''}${h.desc ? `<div style="padding-left:16px">${esc(h.desc)}${Number(h.rate) ? ` (อัตราร้อยละ ${num(h.rate)})` : ''}</div>` : ''}</td><td class="c">${fd(h.date, true)}</td><td class="n">${money(h.amount)}</td><td class="n">${money(h.tax)}</td></tr>`).join('');
   }).join('');
   const sig = d.showSig !== false && s.signature ? `<img class="sig" src="${esc(s.signature)}" alt="">` : '';
-  return `<div class="doc">
+  return `<div class="doc" data-page-label="${esc(`หนังสือรับรองการหักภาษี ณ ที่จ่าย เลขที่ ${d.no}`)}">
     <div class="wt-top"><span>${copyTxt}</span><span>เล่มที่ ${esc(d.wtBook || '.........')}&emsp;เลขที่ ${esc(d.no)}</span></div>
     <div class="wt-title"><h1>หนังสือรับรองการหักภาษี ณ ที่จ่าย</h1><div>ตามมาตรา 50 ทวิ แห่งประมวลรัษฎากร</div></div>
     <div class="wt-box"><b>ผู้มีหน้าที่หักภาษี ณ ที่จ่าย</b>
@@ -3998,7 +4001,7 @@ function srDocHTML(d, o) {
   const lines = t.lines.filter((l) => String(l.desc || '').trim() || Number(l.price));
   const dates = lines.map((l) => l.date || d.date).sort();
   const payee = d.cName ? `<div class="small">ผู้รับเงิน ${esc(d.cName)}${d.cAddress ? ' ที่อยู่ ' + esc(String(d.cAddress).replace(/\n/g, ' ')) : ''}${d.cTaxId ? ' เลขประจำตัว ' + esc(Core.fmtTaxId(d.cTaxId)) : ''}</div>` : '';
-  return `<div class="doc">
+  return `<div class="doc" data-page-label="${esc(`ใบรับรองแทนใบเสร็จรับเงิน เลขที่ ${d.no}`)}">
     <div class="wt-title" style="margin-top:4px"><h1>ใบรับรองแทนใบเสร็จรับเงิน</h1></div>
     <div class="row between" style="margin:8px 0 12px"><span>ชื่อกิจการ <b>${esc(s.bizName || '')}</b>${s.taxId ? `&emsp;เลขประจำตัวผู้เสียภาษี ${esc(Core.fmtTaxId(s.taxId))}` : ''}</span><span>เลขที่ ${esc(d.no)}</span></div>
     <table class="d-table"><thead><tr><th style="width:112px">วัน เดือน ปี</th><th>รายละเอียดรายจ่าย</th><th style="width:120px">จำนวนเงิน</th><th style="width:130px">หมายเหตุ</th></tr></thead>
@@ -4013,7 +4016,7 @@ function pvDocHTML(d, o) {
   const s = db.settings, t = docTotalsFor(d);
   const lines = t.lines.filter((l) => String(l.desc || '').trim() || Number(l.price));
   const methods = ['เงินสด', 'โอนเงิน', 'เช็ค'];
-  return `<div class="doc">
+  return `<div class="doc" data-page-label="${esc(`ใบสำคัญรับเงิน เลขที่ ${d.no}`)}">
     <header class="d-head">${orgBlock()}<div class="d-title"><h1>ใบสำคัญรับเงิน</h1><div class="en">Payment Voucher</div></div></header>
     <table class="d-meta" style="width:260px;margin:12px 0 12px auto"><tr><td>เลขที่</td><td>${esc(d.no)}</td></tr><tr><td>วันที่</td><td>${fd(d.date, true)}</td></tr></table>
     <p style="margin:0 0 4px;line-height:1.9">ข้าพเจ้า <b>${esc(d.cName || '..............................................')}</b>&emsp;เลขประจำตัวผู้เสียภาษี / เลขบัตรประชาชน <b>${esc(Core.fmtTaxId(d.cTaxId) || '...................................')}</b></p>
@@ -4045,7 +4048,7 @@ function docPages(d, copies, stamp) {
 }
 function reportSheet({ title, sub = '', body, landscape = false }) {
   const s = db.settings;
-  return `<div class="doc auto${landscape ? ' landscape' : ''}" style="padding:34px 38px 30px">
+  return `<div class="doc auto${landscape ? ' landscape' : ''}" data-page-label="${esc(title)}" style="padding:34px 38px 30px">
     <div class="rep-head"><div><h1>${esc(title)}</h1><div style="font-size:13px">${esc(sub)}</div></div>
       <div style="text-align:right;font-size:12.5px"><b>${esc(s.bizName || '')}</b>${s.taxId ? `<br>เลขประจำตัวผู้เสียภาษี ${esc(Core.fmtTaxId(s.taxId))}` : ''}${s.branch ? `<br>${esc(s.branch)}` : ''}</div></div>
     ${body}
@@ -4472,33 +4475,65 @@ async function renderCanvases(pagesHTML) {
       // remember where rows and blocks end, so tall pages can be split between them instead of through a line of text
       const top = el.getBoundingClientRect().top;
       const breaks = $$('tr, h3, p, .d-box, .d-block, .d-sum, .d-sign, .d-pay, .rep-head, .wt-box', el).map((n) => n.getBoundingClientRect().bottom - top);
+      // where the column headings sit, so a document that runs long can repeat them on later pages
+      const head = $('.d-items thead, .d-table thead', el);
+      const hb = head ? head.getBoundingClientRect() : null;
       const c = await html2canvas(el, { scale, backgroundColor: '#ffffff', logging: false, useCORS: true, scrollX: 0, scrollY: 0, onclone: thaiBreakClone });
       c._breaks = breaks; c._scale = c.width / el.offsetWidth;
+      c._label = el.dataset.pageLabel || '';
+      if (hb) c._headBand = { top: Math.round((hb.top - top) * c._scale), bottom: Math.round((hb.bottom - top) * c._scale) };
       out.push(c);
     }
     return out;
   } finally { root.innerHTML = ''; }
 }
+const DOC_FONT = '"Sarabun","TH Sarabun New","Noto Sans Thai Looped",Tahoma,sans-serif';
 function sliceCanvas(c, ratio) {
   const pageH = Math.round(c.width * ratio);
-  if (c.height <= pageH * 1.02) return [c];
-  const breaks = (c._breaks || []).map((y) => Math.round(y * (c._scale || 1))).sort((x, y) => x - y);
-  const out = [];
-  let y = 0;
-  while (y < c.height - 12) {
-    let end = Math.min(c.height, y + pageH);
+  if (c.height <= pageH * 1.02) return [c];      // one page: nothing to number or repeat
+  const sc = c._scale || 1;
+  const px = (n) => Math.round(n * sc);
+  const band = c._headBand && c._headBand.bottom > c._headBand.top ? c._headBand : null;
+  // once a document runs past one page, every page says which document it is and where it sits in
+  // the set, and the item columns keep their headings, so a loose sheet is still identifiable
+  const foot = px(30);
+  const strip = px(22) + (band ? band.bottom - band.top : 0);
+  const breaks = (c._breaks || []).map((y) => Math.round(y * sc)).sort((x, y) => x - y);
+  // plan the cuts first: each page has to know the final page count to print "x/y"
+  const cuts = [];
+  for (let y = 0; y < c.height - 12;) {
+    const avail = pageH - foot - (cuts.length ? strip : 0);
+    let end = Math.min(c.height, y + avail);
     if (end < c.height) {
-      const fit = breaks.filter((bk) => bk > y + pageH * 0.5 && bk <= y + pageH);
-      if (fit.length) end = fit[fit.length - 1] + Math.round(2 * (c._scale || 1));
+      const fit = breaks.filter((bk) => bk > y + avail * 0.5 && bk <= y + avail);
+      if (fit.length) end = Math.min(y + avail, fit[fit.length - 1] + px(2));
     }
-    const h = Math.min(end, c.height) - y;
-    const pc = document.createElement('canvas'); pc.width = c.width; pc.height = h;
-    const ctx = pc.getContext('2d'); ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pc.width, h);
-    ctx.drawImage(c, 0, y, c.width, h, 0, 0, c.width, h);
-    out.push(pc);
-    y += h;
+    end = Math.min(Math.max(end, y + 1), c.height);
+    cuts.push([y, end]);
+    y = end;
   }
-  return out;
+  return cuts.map(([from, to], i) => {
+    const headH = i === 0 ? 0 : strip;
+    const pc = document.createElement('canvas');
+    pc.width = c.width; pc.height = (to - from) + headH + foot;
+    const ctx = pc.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, pc.width, pc.height);
+    let top = 0;
+    if (headH) {
+      if (c._label) {
+        ctx.fillStyle = '#5A6672'; ctx.font = `${px(12)}px ${DOC_FONT}`;
+        ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+        ctx.fillText(c._label, px(46), px(12));
+      }
+      top = px(22);
+      if (band) { const h = band.bottom - band.top; ctx.drawImage(c, 0, band.top, c.width, h, 0, top, c.width, h); top += h; }
+    }
+    ctx.drawImage(c, 0, from, c.width, to - from, 0, top, c.width, to - from);
+    ctx.fillStyle = '#8793A0'; ctx.font = `${px(12)}px ${DOC_FONT}`;
+    ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
+    ctx.fillText(`หน้า ${i + 1}/${cuts.length}`, c.width - px(46), pc.height - px(12));
+    return pc;
+  });
 }
 async function exportSheets(pagesHTML, { name, fmt, landscape = false, appendAtts = null }) {
   if (fmt === 'print') { printSheets(pagesHTML, landscape); return; }
