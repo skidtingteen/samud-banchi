@@ -1,6 +1,6 @@
 // Service worker for the hosted copy of สมุดบัญชี: the app is a single HTML file, so caching it
 // (plus manifest and icons) lets the app open with no internet after the first visit.
-const CACHE = 'samud-banchi-c1ea655e68';
+const CACHE = 'samud-banchi-02a3f06360';
 const ASSETS = ['./index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png'];
 
 self.addEventListener('install', (event) => {
