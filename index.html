@@ -1155,7 +1155,8 @@ function defaultState() {
       promptpay: '', bankText: '',
       prefix: { QT: 'QT', IV: 'IV', TX: 'TX', RE: 'RE', CN: 'CN', DN: 'DN', PO: 'PO', WT: 'WT', SR: 'SR', PV: 'PV', JB: 'JB' },
       quoteDays: 30, creditDays: 30, docNote: '', lastBackup: '',
-      aiModel: 'claude-haiku-4-5-20251001',
+      aiProvider: 'anthropic', aiBase: '', aiModels: {},
+      aiModel: 'claude-haiku-4-5-20251001',   // v1 field, migrated into aiModels on load
     },
     categories: defaultCategories(),
     accounts: [{ id: 'cash', name: 'เงินสด', opening: 0 }, { id: 'bank', name: 'บัญชีธนาคาร', opening: 0 }],
@@ -1170,6 +1171,11 @@ function normalize(data) {
   out.settings = { ...d.settings, ...(data.settings || {}) };
   out.settings.prefix = { ...d.settings.prefix, ...((data.settings || {}).prefix || {}) };
   delete out.settings.aiEndpoint;   // shared-proxy option was removed
+  // the AI service is now a choice, so the old single model setting becomes that provider's model
+  if (!AI_PROVIDERS[out.settings.aiProvider]) out.settings.aiProvider = 'anthropic';
+  if (!out.settings.aiModels || typeof out.settings.aiModels !== 'object') out.settings.aiModels = {};
+  if (out.settings.aiModel && !out.settings.aiModels.anthropic) out.settings.aiModels.anthropic = out.settings.aiModel;
+  out.settings.aiBase = typeof out.settings.aiBase === 'string' ? out.settings.aiBase : '';
   const hadJobs = Array.isArray(data.jobs);
   for (const k of ['categories', 'accounts', 'txns', 'docs', 'contacts', 'products', 'recurring', 'jobs']) if (!Array.isArray(out[k])) out[k] = d[k];
   // drop entries a hand-edited or truncated backup left unusable, so no screen can crash on them
@@ -2750,53 +2756,135 @@ function scanPrompt() {
 }
 /* ---------- AI access ----------
    inside Claude: built-in access, no key (usage counts toward the signed-in user's Claude plan)
-   outside Claude: each user's own Anthropic API key (kept only in that browser, billed to that user) */
+   outside Claude: the user's own account at whichever service they already pay for. Each provider
+   below is just three things — where to post, what the body looks like, and where the answer sits —
+   so nobody needs an account with one particular company to use the scanner. */
+const trimSlash = (u) => String(u || '').trim().replace(/\/+$/, '');
+const AI_PROVIDERS = {
+  anthropic: {
+    label: 'Anthropic (Claude)', short: 'Anthropic',
+    base: 'https://api.anthropic.com',
+    baseFixed: true,
+    pdf: true,
+    keyPrefix: 'sk-ant-',
+    keyPlaceholder: 'sk-ant-...',
+    keyPage: 'console.anthropic.com',
+    models: [['claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (ประหยัด เร็ว)'], ['claude-sonnet-5', 'Claude Sonnet 5 (แม่นกว่า แพงกว่า)']],
+    url: (base, model) => `${trimSlash(base)}/v1/messages`,
+    headers: (key) => ({ 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' }),
+    body: (model, prompt, media, maxTokens) => ({
+      model, max_tokens: maxTokens,
+      messages: [{ role: 'user', content: [
+        ...(media ? [media.mime === 'application/pdf'
+          ? { type: 'document', source: { type: 'base64', media_type: media.mime, data: media.b64 } }
+          : { type: 'image', source: { type: 'base64', media_type: media.mime, data: media.b64 } }] : []),
+        { type: 'text', text: prompt },
+      ] }],
+    }),
+    text: (j) => (j.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n'),
+  },
+  gemini: {
+    label: 'Google Gemini', short: 'Gemini',
+    base: 'https://generativelanguage.googleapis.com',
+    baseFixed: true,
+    pdf: true,
+    keyPrefix: 'AIza',
+    keyPlaceholder: 'AIza...',
+    keyPage: 'aistudio.google.com/apikey',
+    models: [['gemini-2.5-flash', 'Gemini 2.5 Flash (ประหยัด เร็ว)'], ['gemini-2.5-pro', 'Gemini 2.5 Pro (แม่นกว่า แพงกว่า)']],
+    url: (base, model) => `${trimSlash(base)}/v1beta/models/${encodeURIComponent(model)}:generateContent`,
+    headers: (key) => ({ 'x-goog-api-key': key }),
+    body: (model, prompt, media, maxTokens) => ({
+      contents: [{ role: 'user', parts: [...(media ? [{ inline_data: { mime_type: media.mime, data: media.b64 } }] : []), { text: prompt }] }],
+      generationConfig: { maxOutputTokens: maxTokens, temperature: 0 },
+    }),
+    text: (j) => (((j.candidates || [])[0] || {}).content || {}).parts ? j.candidates[0].content.parts.map((p) => p.text || '').join('\n') : '',
+  },
+  openai: {
+    // one shape shared by OpenAI, OpenRouter, Groq, DeepSeek, Typhoon, LM Studio, Ollama and others:
+    // only the address and the model name change, so the box below is editable
+    label: 'OpenAI หรือบริการที่ใช้รูปแบบเดียวกัน', short: 'OpenAI',
+    base: 'https://api.openai.com/v1',
+    pdf: false,
+    keyPlaceholder: 'sk-...',
+    keyPage: 'platform.openai.com/api-keys',
+    models: [['gpt-5-mini', 'gpt-5-mini (ประหยัด)'], ['gpt-5', 'gpt-5 (แม่นกว่า)']],
+    modelFree: true,
+    url: (base) => `${trimSlash(base)}/chat/completions`,
+    headers: (key) => ({ Authorization: `Bearer ${key}` }),
+    body: (model, prompt, media, maxTokens, alt) => ({
+      model, [alt ? 'max_completion_tokens' : 'max_tokens']: maxTokens,
+      messages: [{ role: 'user', content: [
+        { type: 'text', text: prompt },
+        ...(media ? [{ type: 'image_url', image_url: { url: `data:${media.mime};base64,${media.b64}` } }] : []),
+      ] }],
+    }),
+    text: (j) => ((((j.choices || [])[0] || {}).message || {}).content) || '',
+  },
+};
+const aiProvider = () => AI_PROVIDERS[db.settings.aiProvider] || AI_PROVIDERS.anthropic;
+const aiProviderId = () => (AI_PROVIDERS[db.settings.aiProvider] ? db.settings.aiProvider : 'anthropic');
+const aiBase = () => (aiProvider().baseFixed ? aiProvider().base : (db.settings.aiBase || '').trim() || aiProvider().base);
+const aiModel = () => (db.settings.aiModels || {})[aiProviderId()] || aiProvider().models[0][0];
+/* keys live in this browser only, one per provider, so switching services does not mean retyping */
 const AIKey = {
-  key: '', loaded: false,
+  keys: {}, loaded: false,
+  get key() { return this.keys[aiProviderId()] || ''; },
   async load() {
     if (this.loaded || Store.mode === 'artifact') return;
     this.loaded = true;
-    try { if (await IDB.usable()) this.key = (await IDB.get('ai-key')) || ''; } catch (e) { /* session only */ }
+    try {
+      if (!(await IDB.usable())) return;
+      const saved = await IDB.get('ai-keys');
+      if (saved) this.keys = JSON.parse(saved);
+      const old = await IDB.get('ai-key');            // v1 kept a single Anthropic key
+      if (old && !this.keys.anthropic) { this.keys.anthropic = old; await this.save(); await IDB.del('ai-key'); }
+    } catch (e) { /* session only */ }
   },
-  async set(value) {
-    this.key = String(value || '').trim();
-    try { if (await IDB.usable()) { if (this.key) await IDB.set('ai-key', this.key); else await IDB.del('ai-key'); } } catch (e) { /* keep for this session only */ }
+  async save() { try { if (await IDB.usable()) await IDB.set('ai-keys', JSON.stringify(this.keys)); } catch (e) { /* session only */ } },
+  async set(value, provider) {
+    const id = provider || aiProviderId();
+    const v = String(value || '').trim();
+    if (v) this.keys[id] = v; else delete this.keys[id];
+    await this.save();
   },
 };
 const aiRoute = () => (Store.mode === 'artifact' ? 'claude' : AIKey.key ? 'key' : 'none');
-async function callClaude(messages, maxTokens = 1000) {
+async function callAI(prompt, media, maxTokens = 1000) {
   const route = aiRoute();
   if (route === 'none') { const e = new Error('nokey'); e.code = 'nokey'; throw e; }
-  const url = 'https://api.anthropic.com/v1/messages';
+  const P = route === 'claude' ? AI_PROVIDERS.anthropic : aiProvider();
+  const model = route === 'claude' ? 'claude-sonnet-4-6' : aiModel();
+  const base = route === 'claude' ? AI_PROVIDERS.anthropic.base : aiBase();
   const headers = { 'Content-Type': 'application/json' };
-  let model = 'claude-sonnet-4-6';
-  if (route === 'key') {
-    model = db.settings.aiModel || 'claude-haiku-4-5-20251001';
-    Object.assign(headers, { 'x-api-key': AIKey.key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' });
-  }
-  let res;
-  try { res = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ model, max_tokens: maxTokens, messages }) }); }
-  catch (e) { const err = new Error('offline'); err.code = 'offline'; throw err; }
-  if (!res.ok) {
+  if (route === 'key') Object.assign(headers, P.headers(AIKey.key));
+  const send = async (alt) => {
+    let res;
+    try { res = await fetch(P.url(base, model), { method: 'POST', headers, body: JSON.stringify(P.body(model, prompt, media, maxTokens, alt)) }); }
+    catch (e) { const err = new Error('offline'); err.code = 'offline'; throw err; }   // network, DNS or a service that refuses browser calls
+    if (res.ok) return res.json();
     let msg = '';
-    try { const j = await res.json(); msg = (j.error && (j.error.message || j.error)) || ''; } catch (e) { /* not JSON */ }
+    try { const j = await res.json(); msg = (j.error && (j.error.message || j.error)) || (j.message || ''); } catch (e) { /* not JSON */ }
+    msg = typeof msg === 'string' ? msg : JSON.stringify(msg);
+    // some services renamed the token limit; retry once with the other spelling before giving up
+    if (!alt && res.status === 400 && /max_tokens|max_completion_tokens/i.test(msg)) return send(true);
     const err = new Error(`HTTP ${res.status} ${msg}`);
     err.code = route === 'claude' && (res.status === 401 || res.status === 403) ? 'offline'
-      : res.status === 401 || res.status === 403 ? 'auth' : res.status === 429 ? 'rate' : /credit|billing|balance/i.test(String(msg)) ? 'credit' : 'http';
+      : res.status === 401 || res.status === 403 ? 'auth' : res.status === 429 ? 'rate'
+      : /credit|billing|balance|quota|insufficient/i.test(msg) ? 'credit' : 'http';
     throw err;
-  }
-  return res.json();
+  };
+  return send(false);
 }
 async function aiReadDocument(item) {
-  const content = [
-    item.isPdf ? { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64Of(item.data) } }
-      : { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64Of(item.data) } },
-    { type: 'text', text: scanPrompt() },
-  ];
-  const data = await callClaude([{ role: 'user', content }], 2000);
-  const text = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+  const P = aiRoute() === 'claude' ? AI_PROVIDERS.anthropic : aiProvider();
+  if (item.isPdf && !P.pdf) { const e = new Error('providerpdf'); e.code = 'providerpdf'; throw e; }
+  const media = { mime: item.isPdf ? 'application/pdf' : 'image/jpeg', b64: b64Of(item.data) };
+  const data = await callAI(scanPrompt(), media, 2000);
+  const text = P.text(data) || '';
   const clean = text.replace(/```json|```/g, '').trim();
   const mm = clean.match(/\{[\s\S]*\}/);
+  if (!mm && !clean) { const e = new Error('empty'); e.code = 'empty'; throw e; }
   return JSON.parse(mm ? mm[0] : clean);
 }
 function mapAiResult(j, item) {
@@ -2918,7 +3006,7 @@ VIEWS.scan = {
           <div class="seg" role="group" aria-label="วิธีอ่านใบเสร็จ">${[['auto', 'อัตโนมัติ'], ['claude', 'AI (Claude)'], ['offline', 'ในเครื่อง (ออฟไลน์)']].map(([k, l]) => `<button data-act="scanEngine" data-v="${k}" aria-pressed="${scanEngine() === k}">${l}</button>`).join('')}</div>
         </div>
         <p class="tiny faint" style="margin:10px auto 0;max-width:640px">${{
-          auto: aiRoute() === 'claude' ? 'เปิดใน Claude อยู่: อ่านด้วย Claude AI (แม่นที่สุด) ถ้าเชื่อมต่อไม่ได้จะอ่านในเครื่องแทน' : aiRoute() !== 'none' ? 'อ่านด้วย AI ผ่าน API key ของคุณ ถ้าใช้ไม่ได้จะอ่านในเครื่องแทน' : 'ยังไม่ได้ตั้งค่า AI จึงอ่านในเครื่อง (ใส่ API key ของตัวเองได้ในหน้าตั้งค่า)',
+          auto: aiRoute() === 'claude' ? 'เปิดใน Claude อยู่: อ่านด้วย Claude AI (แม่นที่สุด) ถ้าเชื่อมต่อไม่ได้จะอ่านในเครื่องแทน' : aiRoute() !== 'none' ? `อ่านด้วย ${esc(aiProvider().label)} ผ่าน API key ของคุณ ถ้าใช้ไม่ได้จะอ่านในเครื่องแทน` : 'ยังไม่ได้ตั้งค่า AI จึงอ่านในเครื่อง (เลือกบริการและใส่ API key ของตัวเองได้ในหน้าตั้งค่า)',
           claude: 'แม่นที่สุด อ่านได้ทั้งรูปและ PDF ใช้ได้เมื่อเปิดใน Claude หรือเมื่อใส่ API key ของตัวเองในหน้าตั้งค่า',
           offline: 'อ่านในเครื่องนี้ ไม่ต้องใช้อินเทอร์เน็ต รูปไม่ถูกส่งออกไปที่ไหน รองรับรูปภาพ (ไม่รองรับ PDF) ความแม่นยำน้อยกว่า AI จึงควรตรวจยอดทุกใบ',
         }[scanEngine()]}${scanEngine() !== 'claude' && OfflineOCR && !OfflineOCR.available() ? ' <b class="neg">เบราว์เซอร์นี้อ่านในเครื่องไม่ได้ ต้องใช้ Chrome, Edge, Firefox หรือ Safari รุ่นใหม่</b>' : ''}</p>
@@ -3005,13 +3093,13 @@ async function processScanQueue() {
       let j = null, used = '';
       try {
         if (eng === 'claude' || (eng === 'auto' && !ui.scan.claudeDown && aiRoute() !== 'none')) {
-          it.stage = aiRoute() === 'claude' ? 'กำลังอ่านด้วย Claude…' : 'กำลังอ่านด้วย AI…'; setScanStatus(it);
+          it.stage = aiRoute() === 'claude' ? 'กำลังอ่านด้วย Claude…' : `กำลังอ่านด้วย ${aiProvider().label}…`; setScanStatus(it);
           try { j = await aiReadDocument(it); used = 'claude'; }
           catch (e) {
             if (eng === 'claude') throw e;
-            if (['offline', 'auth', 'credit', 'nokey'].includes(e.code)) {
+            if (['offline', 'auth', 'credit', 'nokey', 'providerpdf'].includes(e.code)) {
               ui.scan.claudeDown = true;
-              if (e.code !== 'offline') toast(e.code === 'credit' ? 'เครดิต API หมด จึงอ่านในเครื่องแทน' : 'API key ไม่ถูกต้อง จึงอ่านในเครื่องแทน', true, 5000);
+              if (e.code !== 'offline') toast(e.code === 'credit' ? 'เครดิต API หมด จึงอ่านในเครื่องแทน' : e.code === 'providerpdf' ? 'บริการที่เลือกอ่าน PDF ไม่ได้ จึงอ่านในเครื่องแทน' : 'API key ไม่ถูกต้อง จึงอ่านในเครื่องแทน', true, 5000);
             }
           }
         }
@@ -3025,9 +3113,11 @@ async function processScanQueue() {
         it.error = e.code === 'pdf' ? 'PDF อ่านในเครื่องไม่ได้ — จับภาพหน้าจอเอกสารแล้วอัปโหลดเป็นรูป หรือกด “กรอกเอง”'
           : e.code === 'unsupported' ? 'เบราว์เซอร์นี้อ่านในเครื่องไม่ได้ — ใช้ Chrome, Edge, Firefox หรือ Safari รุ่นใหม่ หรือกด “กรอกเอง”'
           : e.code === 'offline' ? 'เชื่อมต่อ AI ไม่ได้ — เปลี่ยนวิธีอ่านเป็น “ในเครื่อง” หรือกด “กรอกเอง”'
-          : e.code === 'nokey' ? 'ยังไม่ได้ตั้งค่า AI — เปิดใน Claude หรือใส่ API key ในหน้าตั้งค่า หรือเลือกอ่าน “ในเครื่อง”'
-          : e.code === 'auth' ? 'API key ไม่ถูกต้อง — ตรวจในหน้าตั้งค่า'
-          : e.code === 'credit' ? 'เครดิต API หมด — เติมเครดิตใน Anthropic Console หรือเลือกอ่าน “ในเครื่อง”'
+          : e.code === 'nokey' ? 'ยังไม่ได้ตั้งค่า AI — เปิดใน Claude หรือเลือกบริการและใส่ API key ในหน้าตั้งค่า หรือเลือกอ่าน “ในเครื่อง”'
+          : e.code === 'providerpdf' ? `${aiProvider().label} อ่านไฟล์ PDF ไม่ได้ — อัปโหลดเป็นรูปภาพ เปลี่ยนบริการในหน้าตั้งค่า หรือกด “กรอกเอง”`
+          : e.code === 'auth' ? `API key ของ ${aiProvider().label} ไม่ถูกต้อง — ตรวจในหน้าตั้งค่า`
+          : e.code === 'empty' ? 'AI ตอบกลับว่าง — ลองอีกครั้ง เปลี่ยนรุ่น หรือกด “กรอกเอง”'
+          : e.code === 'credit' ? `เครดิตของ ${aiProvider().label} หมด — เติมเครดิตหรือเลือกอ่าน “ในเครื่อง”`
           : e.code === 'rate' ? 'เรียกใช้ AI ถี่เกินไป รอสักครู่แล้วกด “อ่านอีกครั้ง”'
           : 'อ่านไม่สำเร็จ ลองอีกครั้ง หมุนภาพ หรือกด “กรอกเอง”';
       }
@@ -3411,6 +3501,7 @@ const sf = (path, label, { type = 'text', hint = '', cls = '', attrs = '' } = {}
 VIEWS.settings = {
   html() {
     const s = db.settings;
+    const P = aiProvider();
     const badTax = s.taxId && !Core.validTaxId(s.taxId);
     const ppHint = s.promptpay ? (/^\d{10}$|^\d{13}$|^\d{15}$/.test(Core.digits(s.promptpay)) ? 'ใช้สร้าง QR รับเงินบนใบแจ้งหนี้' : 'ใส่เบอร์มือถือ 10 หลัก หรือเลขประจำตัว 13 หลัก') : 'เบอร์มือถือหรือเลขประจำตัวผู้เสียภาษีที่ผูกพร้อมเพย์';
     const modeText = { artifact: 'บันทึกอัตโนมัติในพื้นที่เก็บข้อมูลของ Claude (ผูกกับไฟล์นี้)', browser: 'บันทึกอัตโนมัติในเบราว์เซอร์นี้ ข้อมูลอยู่เฉพาะเครื่องและเบราว์เซอร์นี้เท่านั้น', file: 'บันทึกอัตโนมัติลงไฟล์ข้อมูลที่เปิดไว้', memory: 'โหมดชั่วคราว: เบราว์เซอร์นี้ไม่อนุญาตให้เก็บข้อมูล ข้อมูลหายเมื่อปิดหน้า ให้เปิด/สร้างไฟล์ข้อมูล หรือดาวน์โหลดสำรอง' }[Store.mode];
@@ -3472,13 +3563,18 @@ VIEWS.settings = {
           : '<p class="small muted" style="margin:0">ยังไม่มี สร้างได้โดยติ๊ก “ทำซ้ำทุกเดือน” ตอนเพิ่มรายการ เช่น ค่าเช่า ค่าอินเทอร์เน็ต หรือค่าบริการรายเดือนของลูกค้า</p>'}</section>
       <section class="panel" id="aiPanel"><h2>AI อ่านใบเสร็จ</h2>
         ${Store.mode === 'artifact' ? '<p class="small" style="margin:0">เปิดใน Claude อยู่: ใช้ AI อ่านใบเสร็จได้เลยโดยไม่ต้องตั้งค่า การใช้งานนับรวมในแพ็กเกจ Claude ของคนที่เปิดใช้ ถ้าแชร์ให้คนอื่นผ่าน Claude ก็นับในบัญชีของเขาเอง</p>' : `
-        <p class="small" style="margin:0 0 10px">ไฟล์นี้เปิดนอก Claude ถ้าต้องการให้ AI อ่านใบเสร็จ ให้ใส่ API key ของ Anthropic ของตัวเอง (จ่ายตามการใช้งานจริง แต่ละคนใช้คีย์ของตัวเอง) ถ้าไม่ตั้งค่า ระบบอ่านในเครื่องแบบออฟไลน์ได้อยู่แล้ว</p>
+        <p class="small" style="margin:0 0 10px">ไฟล์นี้เปิดนอก Claude ถ้าต้องการให้ AI อ่านใบเสร็จ ให้เลือกบริการที่คุณมีบัญชีอยู่แล้วแล้วใส่ API key ของตัวเอง (จ่ายตามการใช้งานจริง แต่ละคนใช้คีย์ของตัวเอง) ถ้าไม่ตั้งค่า ระบบอ่านในเครื่องแบบออฟไลน์ได้อยู่แล้ว</p>
         <div class="g3">
-          <label class="field">รุ่น AI<select data-change="setting" data-path="settings.aiModel">${opt('claude-haiku-4-5-20251001', 'Claude Haiku 4.5 (ประหยัด เร็ว)', s.aiModel)}${opt('claude-sonnet-5', 'Claude Sonnet 5 (แม่นกว่า แพงกว่า)', s.aiModel)}</select></label>
-          <label class="field span2">Anthropic API key<input type="password" id="aiKeyInput" autocomplete="off" spellcheck="false" placeholder="${AIKey.key ? `บันทึกไว้แล้ว ลงท้ายด้วย ${esc(AIKey.key.slice(-4))}` : 'sk-ant-...'}"><span class="hint">เก็บไว้ในเบราว์เซอร์นี้เท่านั้น ไม่รวมอยู่ในไฟล์สำรอง และไม่ถูกส่งไปที่อื่นนอกจาก Anthropic</span></label>
+          <label class="field">บริการ AI<select data-change="setting" data-path="settings.aiProvider">${Object.entries(AI_PROVIDERS).map(([k, p]) => opt(k, p.label + (AIKey.keys[k] ? ' ✓' : ''), aiProviderId())).join('')}</select></label>
+          ${P.modelFree
+            ? `<label class="field">ชื่อรุ่น<input type="text" list="aiModelList" data-change="setting" data-path="settings.aiModels.${aiProviderId()}" value="${esc(aiModel())}" spellcheck="false"><datalist id="aiModelList">${P.models.map(([m]) => `<option value="${esc(m)}">`).join('')}</datalist><span class="hint">พิมพ์ชื่อรุ่นตามที่บริการนั้นกำหนด</span></label>`
+            : `<label class="field">รุ่น AI<select data-change="setting" data-path="settings.aiModels.${aiProviderId()}">${P.models.map(([m, t]) => opt(m, t, aiModel())).join('')}</select></label>`}
+          <label class="field">API key ของ ${esc(P.short || P.label)}<input type="password" id="aiKeyInput" autocomplete="off" spellcheck="false" placeholder="${AIKey.key ? `บันทึกไว้แล้ว ลงท้ายด้วย ${esc(AIKey.key.slice(-4))}` : esc(P.keyPlaceholder || '')}"><span class="hint">ขอคีย์ได้ที่ ${esc(P.keyPage || '')}</span></label>
+          ${P.baseFixed ? '' : `<label class="field span3">ที่อยู่ API (เปลี่ยนได้ถ้าใช้บริการอื่นที่รูปแบบเดียวกัน เช่น OpenRouter, Groq, DeepSeek, Typhoon หรือ LM Studio ในเครื่อง)<input type="text" data-change="setting" data-path="settings.aiBase" value="${esc(s.aiBase || '')}" placeholder="${esc(P.base)}" spellcheck="false"></label>`}
         </div>
-        <div class="row" style="margin-top:8px"><button class="btn" data-act="aiKeySave">บันทึกคีย์</button><button class="btn" data-act="aiTest">ทดสอบการเชื่อมต่อ</button>${AIKey.key ? '<button class="btn danger" data-act="aiKeyClear">ลบคีย์</button>' : ''}<span class="small muted">สถานะ: ${{ key: 'ใช้ API key ของคุณ', none: 'ยังไม่ได้ตั้งค่า (อ่านในเครื่อง)' }[aiRoute()]}</span></div>
-        <p class="tiny faint" style="margin:10px 0 0">เมื่อใช้ AI รูปใบเสร็จจะถูกส่งไปประมวลผลที่ Anthropic ถ้าไม่ต้องการ ให้เลือกวิธีอ่าน “ในเครื่อง” ในหน้าสแกน</p>`}
+        <div class="row" style="margin-top:8px"><button class="btn" data-act="aiKeySave">บันทึกคีย์</button><button class="btn" data-act="aiTest">ทดสอบการเชื่อมต่อ</button>${AIKey.key ? '<button class="btn danger" data-act="aiKeyClear">ลบคีย์</button>' : ''}<span class="small muted">สถานะ: ${{ key: `ใช้คีย์ของคุณกับ ${esc(P.label)}`, none: 'ยังไม่ได้ตั้งค่า (อ่านในเครื่อง)' }[aiRoute()]}</span></div>
+        <p class="tiny faint" style="margin:10px 0 0">คีย์เก็บไว้ในเบราว์เซอร์นี้เท่านั้น ไม่รวมอยู่ในไฟล์สำรอง และไม่ถูกส่งไปที่อื่นนอกจากบริการที่เลือก เก็บคีย์ของหลายบริการไว้พร้อมกันได้ สลับได้โดยไม่ต้องกรอกใหม่${P.pdf ? '' : ' — บริการนี้อ่านไฟล์ PDF ไม่ได้ ให้ใช้รูปภาพแทน'}</p>
+        <p class="tiny faint" style="margin:6px 0 0">เมื่อใช้ AI รูปใบเสร็จจะถูกส่งไปประมวลผลที่ ${esc(P.label)} ถ้าไม่ต้องการ ให้เลือกวิธีอ่าน “ในเครื่อง” ในหน้าสแกน</p>`}
       </section>
       <section class="panel" id="dataPanel"><h2>ข้อมูลและการสำรอง</h2>
         <p class="small" style="margin:0 0 10px"><span class="dot ${Store.mode === 'memory' ? 'bad' : ''}" style="display:inline-block;margin-right:6px"></span>${modeText}</p>
@@ -3494,7 +3590,7 @@ VIEWS.settings = {
     </div>`;
   },
 };
-const STRUCTURAL = ['settings.vatRegistered', 'settings.be', 'settings.bizType'];
+const STRUCTURAL = ['settings.vatRegistered', 'settings.be', 'settings.bizType', 'settings.aiProvider'];
 CHG.setting = (el) => {
   const path = el.dataset.path;
   let val = el.type === 'checkbox' ? el.checked : el.value;
@@ -3629,15 +3725,16 @@ VIEWS.settings.mount = () => {
 
 ACT.aiKeySave = async () => {
   const el = $('#aiKeyInput'); const v = el ? el.value.trim() : '';
+  const P = aiProvider();
   if (!v) { toast('วาง API key ก่อนกดบันทึก', true); return; }
-  if (!/^sk-ant-/.test(v) && !(await confirmBox('คีย์นี้ไม่ได้ขึ้นต้นด้วย sk-ant- ซึ่งเป็นรูปแบบของ Anthropic บันทึกต่อหรือไม่?', { ok: 'บันทึกต่อ' }))) return;
-  await AIKey.set(v); ui.scan.claudeDown = false; render(); toast('บันทึก API key แล้ว');
+  if (P.keyPrefix && !v.startsWith(P.keyPrefix) && !(await confirmBox(`คีย์นี้ไม่ได้ขึ้นต้นด้วย ${esc(P.keyPrefix)} ซึ่งเป็นรูปแบบของ ${esc(P.label)} บันทึกต่อหรือไม่?`, { ok: 'บันทึกต่อ' }))) return;
+  await AIKey.set(v); ui.scan.claudeDown = false; render(); toast(`บันทึกคีย์ของ ${P.label} แล้ว`);
 };
-ACT.aiKeyClear = async () => { if (await confirmBox('ลบ API key ออกจากเบราว์เซอร์นี้?', { ok: 'ลบคีย์', danger: true })) { await AIKey.set(''); render(); toast('ลบคีย์แล้ว'); } };
+ACT.aiKeyClear = async () => { const P = aiProvider(); if (await confirmBox(`ลบคีย์ของ ${esc(P.label)} ออกจากเบราว์เซอร์นี้?`, { ok: 'ลบคีย์', danger: true })) { await AIKey.set(''); render(); toast('ลบคีย์แล้ว'); } };
 ACT.aiTest = async (el) => {
   el.disabled = true; const t = toast('กำลังทดสอบ…', false, 30000);
-  try { await callClaude([{ role: 'user', content: 'ตอบคำว่า OK' }], 5); t.remove(); toast('เชื่อมต่อ AI ได้ พร้อมอ่านใบเสร็จ'); }
-  catch (e) { t.remove(); toast({ nokey: 'ยังไม่ได้ใส่ API key', auth: 'API key ไม่ถูกต้อง', credit: 'เครดิต API หมด', rate: 'เรียกใช้ถี่เกินไป ลองใหม่ภายหลัง', offline: 'เชื่อมต่อไม่ได้ ตรวจอินเทอร์เน็ต' }[e.code] || `ทดสอบไม่ผ่าน: ${e.message}`, true, 6000); }
+  try { await callAI('ตอบคำว่า OK', null, 16); t.remove(); toast(`เชื่อมต่อ ${aiProvider().label} ได้ พร้อมอ่านใบเสร็จ`); }
+  catch (e) { t.remove(); toast({ nokey: 'ยังไม่ได้ใส่ API key', auth: 'API key ไม่ถูกต้อง', credit: 'เครดิตหมดหรือเกินโควตา', rate: 'เรียกใช้ถี่เกินไป ลองใหม่ภายหลัง', offline: 'เชื่อมต่อไม่ได้ — ตรวจอินเทอร์เน็ต ที่อยู่ API และดูว่าบริการนั้นยอมให้เรียกจากเบราว์เซอร์หรือไม่' }[e.code] || `ทดสอบไม่ผ่าน: ${e.message}`, true, 8000); }
   finally { el.disabled = false; }
 };
 
